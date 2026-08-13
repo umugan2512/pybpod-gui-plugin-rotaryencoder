@@ -1,0 +1,1 @@
+from pybpod_rotaryencoder_module.models.session.session_treenode import SessionTreeNode as Session

@@ -1,4 +1,13 @@
+import time
+
+from serial.tools import list_ports
+
 from pybpodapi.com.arcom import ArCOM, ArduinoTypes
+
+# Many Arduino-class boards (this one included) reset when a new serial connection is opened
+# (DTR toggling), and need a moment to reboot and start responding before the handshake works.
+BOOT_DELAY_S = 2.0
+HANDSHAKE_RETRIES = 3
 
 
 class RotaryEncoderModule(object):
@@ -17,6 +26,7 @@ class RotaryEncoderModule(object):
     COM_SETPREFIX        = ord('I')
     COM_SETTHRESHOLDS    = ord('T')
     COM_SETWRAPPOINT     = ord('W')
+    COM_ENABLE_ALLTHRESHOLDS = ord('E')
 
     def __init__(self, serialport=None):
         """
@@ -35,15 +45,74 @@ class RotaryEncoderModule(object):
         :ivar str serialport: PC serial port where the module is connected
         """
         self.arcom = ArCOM().open(serialport, 115200)
-        self.arcom.write_char(self.COM_HANDSHAKE)
-        if self.arcom.read_uint8() != 217:
-            raise Exception('Could not connect =( ')
+        time.sleep(BOOT_DELAY_S)  # let the board finish resetting before we handshake
+
+        for attempt in range(HANDSHAKE_RETRIES):
+            self.arcom.write_char(self.COM_HANDSHAKE)
+            if self.arcom.read_uint8() == 217:
+                return
+
+        raise Exception(
+            "Could not connect to a Rotary Encoder module on {0} (no handshake response after "
+            "{1}s boot delay + {2} retries -- check this is really the module's own USB port, "
+            "not the Bpod's main state-machine port, and that nothing else has it open)".format(
+                serialport, BOOT_DELAY_S, HANDSHAKE_RETRIES))
 
     def close(self):
         """
         Closes the serial connection to the Rotary Encoder board.
         """
         self.arcom.close()
+
+    @classmethod
+    def discover(cls, exclude_ports=(), timeout=1.0, verbose=True):
+        """
+        Scan available serial ports for a Rotary Encoder module by probing each with the module's
+        own handshake byte, skipping any ports in exclude_ports (e.g. the Bpod state machine's
+        own connection -- pass my_bpod.serial_port here so it's never probed).
+
+        The Rotary Encoder module's own USB position/config port is a separate physical
+        connection from the Bpod state machine's Serial1-5 relay -- nothing about it is reported
+        over that relay, so there's no way to read it off the connected Bpod object.
+
+        :param exclude_ports: iterable of port device names (e.g. ['COM4']) to skip probing.
+        :param float timeout: per-port probe read timeout, in seconds.
+        :param bool verbose: print each port tried and its result, for diagnosing a failed scan.
+        :return: a connected RotaryEncoderModule on the first port that answers the handshake correctly.
+        """
+        candidates = [p.device for p in list_ports.comports() if p.device not in exclude_ports]
+        if verbose:
+            print("RotaryEncoderModule.discover: probing {0} (excluding {1})".format(
+                candidates, list(exclude_ports)))
+
+        for port in candidates:
+            probe = None
+            ack = None
+            error = None
+            try:
+                probe = ArCOM().open(port, baudrate=115200, timeout=timeout)
+                time.sleep(BOOT_DELAY_S)  # let the board finish resetting before we handshake
+                for attempt in range(HANDSHAKE_RETRIES):
+                    probe.write_char(cls.COM_HANDSHAKE)
+                    ack = probe.read_uint8()
+                    if ack == 217:
+                        break
+            except Exception as exc:
+                error = exc
+            finally:
+                if probe is not None:
+                    probe.close()
+
+            if verbose:
+                print("  {0}: {1}".format(
+                    port, "error: {0}".format(error) if error else "ack={0}".format(ack)))
+
+            if ack == 217:
+                return cls(port)
+
+        raise RuntimeError(
+            "No Rotary Encoder module found on any serial port (probed {0}, excluding {1})".format(
+                candidates, list(exclude_ports)))
 
     def __pos_2_degrees(self, pos):
         return round(((float(pos)/512.0)*180.0)*10.0)/10.0
@@ -126,11 +195,22 @@ class RotaryEncoderModule(object):
         ticks = int.from_bytes(data_in_bytes, byteorder='little', signed=True)
         return self.__pos_2_degrees(ticks)
 
-    def set_zero_position(self):
+    def set_zero_position(self, tolerance_deg=1.0, retries=3):
         """
-        Sets current rotary encoder position to zero.
+        Sets current position to zero and verifies it actually took by re-querying
+        current_position() -- COM_SETZEROPOS has no acknowledgment byte, so a write that's dropped
+        or misprocessed (e.g. racing another command on this connection from a different thread)
+        would otherwise fail completely silently, leaving every later position/threshold check
+        relative to the wrong baseline. Retries a bounded number of times before raising.
         """
-        self.arcom.write_array([self.COM_SETZEROPOS])
+        for attempt in range(retries):
+            self.arcom.write_array([self.COM_SETZEROPOS])
+            if abs(self.current_position()) <= tolerance_deg:
+                return
+        raise Exception(
+            "set_zero_position() did not take effect after {0} attempts (still reading {1}deg "
+            "from zero) -- check for concurrent access to this connection from another "
+            "thread".format(retries, self.current_position()))
 
     def set_position(self, degrees):
         """
@@ -157,6 +237,20 @@ class RotaryEncoderModule(object):
         string = ''.join(map(lambda x: str(int(x)), thresholds))
         bits = int(string, 2)
         self.arcom.write_array([self.COM_ENABLETHRESHOLDS, bits])
+
+    def enable_all_thresholds(self):
+        """
+        Enables all 8 thresholds unconditionally -- same firmware command as the Bpod-relay
+        RotaryEncoder class's create_resetpositions_trigger() (module.py's
+        COM_ENABLE_ALLTHRESHOLDS), issued directly over USB instead of via a relay output_action.
+        Prefer this over enable_thresholds() when only a subset is meant to be armed: building the
+        bitmask by joining the list in index order and passing it to int(string, 2) puts list index
+        0 at the most-significant bit, not bit 0 -- so a selective list like
+        [True, True, True, True, False, False, False, False] likely arms slots 4-7, not 0-3, under
+        the standard bit-N-selects-threshold-N firmware convention. This command has no such
+        ambiguity since it just arms everything.
+        """
+        self.arcom.write_array([self.COM_ENABLE_ALLTHRESHOLDS])
 
     def enable_logging(self):
         """
@@ -199,16 +293,25 @@ class RotaryEncoderModule(object):
         self.arcom.write_array([self.COM_SETPREFIX, prefix])
         return self.arcom.read_uint8() == 1
 
-    def set_thresholds(self, thresholds):
+    def set_thresholds(self, thresholds, retries=3):
         """
-        Sets the thresholds values to trigger the events.
+        Sets the thresholds values to trigger events, retrying a bounded number of times if the
+        board doesn't acknowledge -- a wheel task may call this every trial (not just once at
+        startup) to re-center thresholds on each trial's fresh zero, so a silently dropped write
+        here means a whole trial's Hold/choice detection runs against stale bounds (see
+        set_zero_position()).
 
         :ivar list(int) thresholds: List, in maximum, of 6 thresholds to trigger events.
         """
         data = ArduinoTypes.get_uint8_array([self.COM_SETTHRESHOLDS, len(thresholds)])
         data += ArduinoTypes.get_uint16_array([self.__degrees_2_pos(thresh) for thresh in thresholds])
-        self.arcom.write_array(data)
-        return self.arcom.read_uint8() == 1
+        for attempt in range(retries):
+            self.arcom.write_array(data)
+            if self.arcom.read_uint8() == 1:
+                return True
+        raise Exception(
+            "set_thresholds({0}) was not acknowledged after {1} attempts".format(
+                thresholds, retries))
 
     def set_wrappoint(self, wrap_point):
         """

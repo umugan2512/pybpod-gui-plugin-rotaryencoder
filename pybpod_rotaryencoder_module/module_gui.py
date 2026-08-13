@@ -41,6 +41,7 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
         self._reset_threshs = ControlButton('Reset thresholds')
         self._thresh_lower 	= ControlNumber('Lower threshold (deg)', 0, minimum=-360, maximum=360)
         self._thresh_upper 	= ControlNumber('Upper threshold (deg)', 0, minimum=-360, maximum=360)
+        self._auto_zero        = ControlCheckBox('Auto-zero on threshold cross')
         self._graph 		= ControlMatplotlib('Value')
         self._clear_btn 	= ControlButton('Clear')
 
@@ -51,7 +52,7 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
             ('_filename', '_saveas_btn'),
             ('_events', '_output_stream', '_stream', '_stream_file', '_zero_btn'),
             '_start_reading',
-            ('_thresh_lower', '_thresh_upper', '_reset_threshs'),
+            ('_thresh_lower', '_thresh_upper', '_reset_threshs', '_auto_zero'),
             '=',
             '_graph',
             '_clear_btn'
@@ -65,6 +66,7 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
         self._reset_threshs.enabled = False
         self._thresh_lower.enabled = False
         self._thresh_upper.enabled = False
+        self._auto_zero.enabled = False
         self._start_reading.enabled = False
 
         self._connect_btn.value = self.__toggle_connection_evt
@@ -176,6 +178,9 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
             if data[0] == 'P':
                 self.history_x.append(data[1])
                 self.history_y.append(data[2])
+                if self._auto_zero.value and (
+                        data[2] <= self._thresh_lower.value or data[2] >= self._thresh_upper.value):
+                    self.set_zero_position()
         self._graph.draw()
 
     def __update_readings(self):
@@ -234,6 +239,7 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
             self._reset_threshs.enabled = False
             self._thresh_lower.enabled = False
             self._thresh_upper.enabled = False
+            self._auto_zero.enabled = False
             self._start_reading.enabled = False
             self._stream_file.enabled = False
 
@@ -251,6 +257,7 @@ class RotaryEncoderModuleGUI(RotaryEncoderModule, BaseWidget):
                 self._reset_threshs.enabled = True
                 self._thresh_lower.enabled = True
                 self._thresh_upper.enabled = True
+                self._auto_zero.enabled = True
                 self._start_reading.enabled = True
 
                 self._port.enabled = False

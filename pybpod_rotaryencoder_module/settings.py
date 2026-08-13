@@ -9,3 +9,6 @@ ROTARYENCODER_PLUGIN_ICON = os.path.join( os.path.dirname(__file__), 'resources'
 
 ROTARYENCODER_PLUGIN_WINDOW_SIZE = 300, 500
 
+# refresh rate (ms) for the embedded "Wheel Position" session plot
+WHEELPOSITION_PLUGIN_REFRESH_RATE = 200
+
