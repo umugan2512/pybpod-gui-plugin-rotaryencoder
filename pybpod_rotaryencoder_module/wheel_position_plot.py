@@ -129,7 +129,8 @@ class WheelPositionPlot(BaseWidget):
 
         res = new_rows.query(
             "TYPE == 'VAL' and MSG in ['WHEEL_POS', 'TRIAL_START', "
-            "'CHOICE_MADE', 'TIMED_OUT', 'LEFT_THRESHOLD_DEG', 'RIGHT_THRESHOLD_DEG']")
+            "'CHOICE_MADE', 'TIMED_OUT', 'LEFT_THRESHOLD_DEG', 'RIGHT_THRESHOLD_DEG', "
+            "'THRESHOLD_DEG']")
 
         for index, msg in res.iterrows():
             name = msg[self.COL_MSG]
@@ -149,6 +150,13 @@ class WheelPositionPlot(BaseWidget):
                 self._left_threshold = float(info)
             elif name == 'RIGHT_THRESHOLD_DEG':
                 self._right_threshold = float(info)
+            elif name == 'THRESHOLD_DEG':
+                # A single symmetric threshold (Stage 1/2's own convention -- see
+                # rotary_setup.set_and_enable_thresholds(rotary, [-threshold, threshold])) rather
+                # than separate LEFT/RIGHT values -- draw both lines from the one value.
+                threshold = float(info)
+                self._left_threshold = -threshold
+                self._right_threshold = threshold
 
     def _draw_new_markers(self, axes, values, drawn_count_attr, color):
         """ Appends one axvline per value added since the last call, instead of redrawing the whole
