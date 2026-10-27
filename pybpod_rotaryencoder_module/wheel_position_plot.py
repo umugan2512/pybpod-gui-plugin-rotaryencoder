@@ -137,7 +137,7 @@ class WheelPositionPlot(BaseWidget):
             info = msg[self.COL_INFO]
 
             if name == 'WHEEL_POS':
-                t_str, pos_str = str(info).split(',')
+                t_str, pos_str = str(info).split(',')[:2]   # a 3rd field (module time) may follow
                 self._times.append(float(t_str))
                 self._positions.append(float(pos_str))
             elif name == 'TRIAL_START':
